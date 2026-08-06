@@ -1,0 +1,13 @@
+can you give me synthetic data for the used car inspection chatbot for predicting the price of the car based on the kms or miles driven and condition or by providing image and then mentioning tyre wear , paint fade, bumper damage etc
+
+
+
+Groq - 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
+
+Lagsmith - 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
+
+google API key - AQ.Ab8RN6LZwtD6bI9OlS6Zw1pLbv3RX50M_QIeJQ-rrXxXT6Oh2Q
+
+Gemini API key - AQ.Ab8RN6JhuTZ1cz64X4abBa0N0LkaW1aA-U9VAjHzrNr4-q9JLQ
+
+New Langsmith API - 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

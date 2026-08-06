@@ -1,0 +1,5 @@
+[
+  {"benefit": "Health Insurance", "coverage": "90% premium coverage for employee, 70% for dependents", "department": "HR"},
+  {"benefit": "401k Match", "coverage": "100% match up to 4% of base salary", "department": "HR"},
+  {"benefit": "Wellness Stipend", "coverage": "$600 annual stipend for fitness or mental health apps", "department": "HR"}
+]

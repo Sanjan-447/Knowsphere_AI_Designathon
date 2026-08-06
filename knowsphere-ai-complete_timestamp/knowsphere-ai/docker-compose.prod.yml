@@ -1,0 +1,136 @@
+# Production profile (Phase 6 Docker optimization). Run with:
+#   docker compose -f docker-compose.prod.yml up --build
+#
+# Differs from docker-compose.yml (the dev profile) in three real ways,
+# not just naming:
+#   1. Uses Dockerfile.prod for both backend and frontend (multi-stage
+#      builds — see those files' comments for what's actually smaller/
+#      different about them, not just relabeled dev images).
+#   2. No source-code bind mounts — the image is the actual deployed
+#      artifact; editing a file on the host doesn't affect a running
+#      container, which is the correct production behavior (dev's live
+#      bind-mount is a development convenience, not something you want
+#      once an image is meant to be an immutable, promotable build).
+#   3. Frontend is served by nginx on port 80 (static files), not a live
+#      Vite dev server on 5173.
+#
+# Celery Beat is deliberately NOT included here — there are no scheduled/
+# periodic tasks defined anywhere in this codebase today (the expired-
+# document scan is admin-triggered via POST /notifications/check-expired-documents,
+# not a cron job). Add a celery_beat service here if a future phase
+# introduces an actual periodic schedule; adding it now with nothing to
+# schedule would just be another process to keep healthy for no benefit.
+
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-knowsphere}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowsphere}
+      POSTGRES_DB: ${POSTGRES_DB:-knowsphere_ai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-knowsphere}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No host port mapping in production by default — Postgres should only
+    # be reachable from other containers on the compose network, not the
+    # host's public interface. Add "ports: - 5432:5432" back only if you
+    # genuinely need host-level DB access (e.g. for a one-off psql session).
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-knowsphere}:${POSTGRES_PASSWORD:-knowsphere}@postgres:5432/${POSTGRES_DB:-knowsphere_ai}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - upload_data:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/health/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # Runs `flask db upgrade` once, then exits — the correct production
+  # pattern (a dedicated release step) instead of racing N backend
+  # replicas to apply the same migration on every boot, which
+  # Dockerfile.prod's CMD explicitly avoids doing automatically.
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-knowsphere}:${POSTGRES_PASSWORD:-knowsphere}@postgres:5432/${POSTGRES_DB:-knowsphere_ai}
+      REDIS_URL: redis://redis:6379/0
+    command: ["flask", "db", "upgrade"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+    command: celery -A celery_worker.celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-knowsphere}:${POSTGRES_PASSWORD:-knowsphere}@postgres:5432/${POSTGRES_DB:-knowsphere_ai}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - upload_data:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:5000/api/v1}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  upload_data:

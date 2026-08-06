@@ -1,0 +1,7 @@
+{
+  "messages": [
+    {"user": "alice", "text": "Does anyone know the deadline for Q3 expense reports?", "ts": "2026-07-01T09:15:00"},
+    {"user": "bob", "text": "I believe it's the 15th, let me check the finance wiki.", "ts": "2026-07-01T09:17:00"},
+    {"user": "bob", "text": "Confirmed — July 15th for all expense reports.", "ts": "2026-07-01T09:20:00"}
+  ]
+}

@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-knowsphere}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-knowsphere}
+      POSTGRES_DB: ${POSTGRES_DB:-knowsphere_ai}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-knowsphere}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-knowsphere}:${POSTGRES_PASSWORD:-knowsphere}@postgres:5432/${POSTGRES_DB:-knowsphere_ai}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - upload_data:/app/uploads
+
+  celery_worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: celery -A celery_worker.celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-knowsphere}:${POSTGRES_PASSWORD:-knowsphere}@postgres:5432/${POSTGRES_DB:-knowsphere_ai}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - upload_data:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: http://localhost:5000/api/v1
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:
+  upload_data:

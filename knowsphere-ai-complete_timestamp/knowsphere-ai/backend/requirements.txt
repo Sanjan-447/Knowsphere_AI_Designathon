@@ -1,0 +1,37 @@
+Flask==3.0.3
+Werkzeug==3.1.8
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.7
+Flask-JWT-Extended==4.6.0
+Flask-Cors==4.0.1
+python-dotenv==1.0.1
+cryptography==43.0.1
+psycopg2-binary==2.9.9
+gunicorn==22.0.0
+email-validator==2.2.0
+
+# --- Phase 2: Document Intelligence & Knowledge Ingestion ---
+celery[redis]==5.4.0
+kombu==5.6.2
+vine==5.1.0
+amqp==5.3.1
+redis==5.0.8
+pgvector==0.3.5
+pypdf==4.3.1
+python-docx==1.1.2
+pandas==2.2.2
+openpyxl==3.1.5
+extract-msg==0.54.0
+requests==2.32.3
+tiktoken==0.7.0
+
+# --- Phase 4: LangGraph orchestration ---
+langgraph==1.2.10
+
+# --- Phase 5: LangSmith observability, system monitoring ---
+langsmith==0.10.15
+psutil==6.0.0
+
+# --- Phase 6: Security hardening ---
+Flask-Limiter==4.1.1
+python-magic==0.4.27

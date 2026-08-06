@@ -1,0 +1,56 @@
+# Multi-stage production Dockerfile (Phase 6 Docker optimization).
+#
+# Builder stage installs build tools (gcc, headers) and compiles wheels;
+# the final stage copies only the resulting Python packages and app code,
+# never the compilers/headers themselves — this is what actually shrinks
+# the image, not just cosmetic layer reordering. Also adds libmagic1 (the
+# runtime shared library python-magic needs for Phase 6's file-signature
+# validation — a genuinely new runtime dependency this image didn't need
+# before that feature existed) and drops root privileges for the running
+# process, which the original Phase 1 Dockerfile didn't do.
+
+# ---------- Builder ----------
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ---------- Final ----------
+FROM python:3.12-slim AS final
+
+WORKDIR /app
+
+# Runtime-only system deps: libpq5 (psycopg2 needs the client lib, not the
+# full -dev headers), libmagic1 (python-magic), curl (container healthcheck).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 libmagic1 curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r knowsphere && useradd -r -g knowsphere -d /app knowsphere
+
+COPY --from=builder /install /usr/local
+COPY . .
+
+RUN mkdir -p /app/uploads && chown -R knowsphere:knowsphere /app
+
+ENV FLASK_APP=wsgi.py \
+    PYTHONUNBUFFERED=1 \
+    APP_ENV=production
+
+USER knowsphere
+
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:5000/api/v1/health/ready || exit 1
+
+# Migrations run as a separate release step in production (see the
+# Deployment Guide), not on every container boot — running them here would
+# mean N replicas racing to apply the same migration simultaneously during
+# a scaled rollout.
+CMD ["gunicorn", "-w", "4", "-b", "0.0.0.0:5000", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "wsgi:app"]

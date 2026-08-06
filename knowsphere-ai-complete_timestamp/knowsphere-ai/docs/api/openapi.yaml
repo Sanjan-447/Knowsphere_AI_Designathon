@@ -1,0 +1,535 @@
+openapi: 3.0.3
+info:
+  title: KnowSphere AI API
+  version: "6.0.0"
+  description: |
+    Enterprise Knowledge Intelligence Platform — REST API.
+
+    Scoping note: this specification covers the primary request/response
+    shape of every resource group (auth, providers, documents, chat,
+    analytics, audit, observability, notifications, health). It documents
+    the core, most-used parameters for each endpoint rather than every
+    optional query parameter combination across 60+ endpoints — treat this
+    as the authoritative contract for integration purposes, and the actual
+    route source (`app/*/routes.py`) as the final word on any parameter
+    not shown here.
+
+    All endpoints are prefixed with `/api/v1`. Authentication is a JWT
+    Bearer token in the `Authorization` header, obtained via `/auth/login`.
+servers:
+  - url: http://localhost:5000/api/v1
+    description: Local development
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ApiSuccess:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: {}
+        message: { type: string }
+        request_id: { type: string, nullable: true }
+
+    ApiError:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            code: { type: string, example: "VALIDATION_ERROR" }
+            message: { type: string }
+            details: { nullable: true }
+        request_id: { type: string, nullable: true }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        role: { type: string, enum: [admin, manager, employee] }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: string, format: date-time, nullable: true }
+
+    Document:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        file_type: { type: string, example: pdf }
+        source_type: { type: string, enum: [upload, email, chat_export, share_link] }
+        status: { type: string, enum: [uploaded, validating, parsing, chunking, embedding, indexing, ready, failed] }
+        department: { type: string, nullable: true }
+        chunk_count: { type: integer }
+        visible_to_roles: { type: array, items: { type: string } }
+
+    ChatSession:
+      type: object
+      properties:
+        id: { type: integer }
+        session_uid: { type: string }
+        title: { type: string }
+        message_count: { type: integer }
+
+    Citation:
+      type: object
+      properties:
+        marker: { type: integer }
+        citation_type: { type: string, enum: [document, email, chat_export, share_link] }
+        display_fields: { type: object }
+        confidence_score: { type: number, nullable: true }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Forbidden:
+      description: Authenticated, but role doesn't have permission
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    NotFound:
+      description: Resource not found (or not visible to this user's role)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    ValidationError:
+      description: Request payload failed validation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+
+paths:
+  /health:
+    get:
+      summary: Basic health check
+      security: []
+      responses:
+        "200": { description: Backend is running }
+
+  /health/live:
+    get:
+      summary: Liveness probe — no dependency checks
+      security: []
+      responses:
+        "200": { description: Process is alive }
+
+  /health/ready:
+    get:
+      summary: Readiness probe — checks Postgres and Redis
+      security: []
+      responses:
+        "200": { description: All dependencies reachable }
+        "503": { description: One or more dependencies unavailable }
+
+  /auth/login:
+    post:
+      summary: Login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        "200":
+          description: Login successful — returns access and refresh tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiSuccess" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { description: "Too many login attempts (brute-force rate limit, 10/min)" }
+
+  /auth/refresh:
+    post:
+      summary: Rotate access/refresh tokens
+      security: [{ bearerAuth: [] }]
+      description: Requires the refresh token (not the access token) as the Bearer token.
+      responses:
+        "200": { description: New token pair issued }
+
+  /auth/logout:
+    post:
+      summary: Revoke the current refresh token
+      responses:
+        "200": { description: Logged out }
+
+  /auth/me:
+    get:
+      summary: Current authenticated user
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+
+  /auth/users:
+    get:
+      summary: List all users (admin only)
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Provision a new user (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, display_name]
+              properties:
+                email: { type: string }
+                password: { type: string }
+                display_name: { type: string }
+                role: { type: string, enum: [admin, manager, employee] }
+      responses:
+        "201": { description: User created }
+
+  /auth/users/{userId}:
+    patch:
+      summary: Update a user's role or active status (admin only)
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string }
+                is_active: { type: boolean }
+      responses:
+        "200": { description: Updated }
+
+  /providers:
+    get:
+      summary: List configured LLM/embedding providers (admin only)
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Add a provider (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_name, provider_type]
+              properties:
+                display_name: { type: string }
+                provider_type: { type: string, enum: [openai, anthropic, gemini, groq, openrouter, nvidia_nim, ollama, openai_compatible] }
+                api_key: { type: string }
+                base_url: { type: string }
+                capability: { type: string, enum: [llm, embedding, both] }
+      responses:
+        "201": { description: Provider created }
+
+  /providers/{providerId}/activate:
+    post:
+      summary: Set this provider as the org-wide default
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Now the default provider }
+
+  /documents:
+    get:
+      summary: List documents (ACL-filtered for non-managers)
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: file_type
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items: { $ref: "#/components/schemas/Document" }
+    post:
+      summary: Upload one or more documents (admin/manager only)
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+                department: { type: string }
+      responses:
+        "202": { description: "Upload accepted, processing asynchronously" }
+
+  /documents/{documentId}:
+    get:
+      summary: Full document detail including metadata and processing history
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      summary: Delete a document (admin/manager only)
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: Deleted }
+
+  /chat/sessions:
+    get:
+      summary: List the current user's chat sessions
+      responses:
+        "200": { description: OK }
+    post:
+      summary: Create a new chat session
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiSuccess"
+
+  /chat/sessions/{sessionId}/messages:
+    post:
+      summary: Send a message (non-streaming, cacheable)
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string }
+                top_k: { type: integer, default: 8 }
+                filters:
+                  type: object
+                  properties:
+                    department: { type: string }
+                    source_type: { type: string }
+      responses:
+        "200":
+          description: Grounded, cited answer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response: { type: string }
+                  citations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Citation" }
+                  from_cache: { type: boolean }
+
+  /chat/sessions/{sessionId}/messages/stream:
+    post:
+      summary: Send a message via SSE streaming
+      description: |
+        Returns `text/event-stream`. Emits `data: {"type":"chunk","text":"..."}`
+        events while generating, then one `data: {"type":"done","message":{...}}`
+        event with the final message including citations.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: SSE stream }
+
+  /chat/messages/{messageId}/feedback:
+    post:
+      summary: Rate an assistant response
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                rating: { type: string, enum: [helpful, not_helpful] }
+                comment: { type: string }
+      responses:
+        "200": { description: Feedback recorded }
+
+  /chat/admin/messages/{messageId}/inspect:
+    get:
+      summary: Retrieval Inspector — full debug detail (admin only)
+      description: The only endpoint that returns the raw generated prompt sent to the LLM.
+      parameters:
+        - name: messageId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /analytics/overview:
+    get:
+      summary: Enterprise Dashboard KPIs (admin/manager)
+      responses:
+        "200": { description: OK }
+
+  /analytics/trends:
+    get:
+      summary: Time-series activity trend
+      parameters:
+        - name: granularity
+          in: query
+          schema: { type: string, enum: [day, week, month] }
+      responses:
+        "200": { description: OK }
+
+  /analytics/export/{reportType}:
+    get:
+      summary: Export a report as CSV, Excel, or PDF
+      parameters:
+        - name: reportType
+          in: path
+          required: true
+          schema: { type: string, enum: [overview, usage, feedback, knowledge-gaps] }
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [csv, excel, pdf] }
+      responses:
+        "200":
+          description: File download
+          content:
+            text/csv: {}
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {}
+            application/pdf: {}
+
+  /audit:
+    get:
+      summary: Search audit logs (admin only)
+      parameters:
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: actor_email
+          in: query
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
+
+  /audit/export:
+    get:
+      summary: Export audit logs (admin only)
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [csv, excel, pdf] }
+      responses:
+        "200": { description: File download }
+
+  /observability/langsmith:
+    get:
+      summary: View LangSmith configuration (key masked, admin only)
+      responses:
+        "200": { description: OK }
+    patch:
+      summary: Update LangSmith configuration (admin only)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                api_key: { type: string }
+                project_name: { type: string }
+                tracing_enabled: { type: boolean }
+      responses:
+        "200": { description: Updated }
+
+  /observability/system:
+    get:
+      summary: Live system health — Postgres, pgvector, Redis, Celery, disk, CPU/memory (admin only)
+      responses:
+        "200": { description: OK }
+
+  /observability/providers:
+    get:
+      summary: Provider Monitoring Dashboard — response time, success rate, cost, last used (admin only)
+      responses:
+        "200": { description: OK }
+
+  /notifications:
+    get:
+      summary: List notifications (admin only)
+      parameters:
+        - name: unread_only
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200": { description: OK }
+
+  /notifications/check-expired-documents:
+    post:
+      summary: Admin-triggered scan for stale/expired documents (admin only)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                days_threshold: { type: integer, default: 365 }
+      responses:
+        "200": { description: Scan complete }
